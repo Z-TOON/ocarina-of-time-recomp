@@ -166,3 +166,37 @@ After each change that alters what a shader computes: the `verify-shader-change`
   - The game embeds Lua; its error longjmp crashed us at `main+0x1661690` (d105aa9 fixes it, runtime/sjlj.c).
   - New dump (`files/`, base + update packages, 186,583 RomFS files as other players have) in use since this
     evening; code identical, 9 RomFS files differ from the old one, none in Kokiri Forest.
+- 2026-11-08, night (RTX 2080, mirror mode): pass 0's counts reach their records. `OOT_PTR_TRACE=e6d5432f,<frame>`
+  (new, `vk_exec_draw.c ptr_trace`) showed the kernel runs (its warp ranges at `c[3][0x660..0x6f0]` read 0x8d to
+  0x2a3) and that what it lost was slots: the game binds 12 storage slots, bank 4 points into eight pools, and only
+  the four left free took a pointer target, so the counts through the others were dropped. Fixes, all host side:
+  - for an NVN2 kernel with no slot left, a game slot the kernel reaches through its own bank-0 table entry (traced)
+    gives its run-time search slot to a pointer target; the NVN2 tables and the traced bindings keep the game's
+    bindings (`game_ssbo`, `nvn2_traced_slots`). All nine targets bind now;
+  - a written pointer target writes back its first 256 bytes in mirror mode (before, targets were bound read-only and
+    nothing counted through them reached guest memory); without `vk_usnap_drop`, which invalidates every cached
+    resource set (1 fps with one per dispatch);
+  - the pointer scan reads a block's snapshot (vk_usnap.c), and scans uniform blocks for compute, task and mesh stages
+    only: 93dd87b's scan of vertex and fragment uniform blocks took the level from 28 to 1 fps here
+    (`OOT_PTR_BIND_GFX=0` gave 28 back).
+  Picture: the big white wedges and the sky showing through are gone (`build/logs/ptrwb-level3.png` against
+  `ptrwb-level.png`, same moment; `ptrwb-level4.png`, Navi's scene, one white streak left). Left: the stretched
+  triangles (plan item 2) and a white patch on the water. Import mode runs at 17 fps on this machine: use mirror mode.
+- 2026-11-08, later still (RTX 2080):
+  - Frame rate: `ptr_targets_add` took 71% of the render thread (`OOT_PROFILE_RENDER`); `ptr_scan` caches each
+    block's pointers per submission: 16.8 -> 27-28 fps on the level, now GPU-bound near 31 ms a frame, of which the
+    histogram kernel `745220f3` takes 12.2 ms per dispatch (`OOT_CS_TIME=1`): the next target for 60 fps.
+  - Plan item 2 done: translator patch 0025 starts task and mesh programs from a cleared count (a culled meshlet exits
+    before writing it, and the epilogue emitted the previous workgroup's leftovers): no more white spikes
+    (`build/logs/mesh0-level.png`). Patch 0026: local memory starts at zero (Hookshot's 08b413e).
+  - `ace1cec0` runs by default again: no blocks, no black scene on the route (`build/logs/ace-on-level.png`).
+  - The exposure readback wait (`vk_backend.c guest_read`, after Hookshot's 98563eb) turned the picture black; it is
+    off by default (`OOT_READBACK_WAIT=1`). `OOT_READBACK_LOG=<n>,<frame>` logs what the CPU reads back: about 8
+    buffers a frame, among them 0x1040-byte ones written by 1x1x1 kernels 43cc74f6 and 90e682b1 (-10.0 every fourth
+    word from word 5). Open: the overexposure (white sky, posterized colours) and the missing grass.
+  - The white tangle (with its own shadow) over the Deku Tree's first scene and on the water is the grass: mesh
+    program `bd5a7c84` (task `0539c559`), found by bisecting the 34 mesh programs of the scene (`OOT_MESH_SKIP`,
+    `OOT_MESH_LIST`) on the player's recorded route (`run.py --record`, `build/logs/blob.txt`). It loads from its
+    storage slot 0 at negative offsets (`[UR4 - 4]`, `[UR4 - 16]`, UR4 = c0 0x770), which the foliage programs that
+    draw right do not. Skipped by default (`MESH_SKIP_DEFAULT`) until that is fixed: no tangle, no grass. Clearing the
+    whole mesh stage buffer at the start (tried as a patch 0027) did not change it.
